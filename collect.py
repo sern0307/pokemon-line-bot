@@ -6,21 +6,28 @@ LINE通知は行わない。
 import os
 from datetime import datetime, timezone, timedelta
 
-from scraper import scrape_all
+from scraper import scrape_all, get_latest_season
 from db import init_db, save_rankings
 
 RULE   = int(os.environ.get("RULE", "0"))
-SEASON = os.environ.get("SEASON")
+SEASON = os.environ.get("SEASON")  # 空 = 最新シーズン自動検出
 
 JST = timezone(timedelta(hours=9))
 
 
 def main():
-    season_int = int(SEASON) if SEASON else None
     now = datetime.now(JST)
     print(f"[{now.isoformat()}] 収集開始 rule={RULE}")
 
     init_db()
+
+    # シーズン番号を決定（環境変数で明示指定がない場合は自動検出）
+    if SEASON:
+        season_int = int(SEASON)
+        print(f"シーズン: {season_int}（環境変数で指定）")
+    else:
+        season_int, season_label = get_latest_season(rule=RULE)
+        print(f"最新シーズン自動検出: {season_int}（{season_label}）")
 
     print("全300件を取得中...")
     trainers, site_updated_at = scrape_all(season=season_int, rule=RULE)

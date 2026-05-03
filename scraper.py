@@ -18,6 +18,38 @@ HEADERS = {
 }
 
 
+def get_latest_season(rule: int = 0) -> tuple[int, str]:
+    """
+    サイトのシーズン選択UIから最新シーズン番号を取得する。
+    戻り値: (シーズン番号, シーズン名)  例: (2, "シーズンM-2")
+    """
+    try:
+        resp = requests.get(BASE_URL, params={"rule": rule}, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        resp.encoding = "utf-8"
+    except requests.RequestException as e:
+        raise RuntimeError(f"シーズン情報取得失敗: {e}") from e
+
+    soup = BeautifulSoup(resp.text, "lxml")
+    select = soup.find("select", {"name": "season"})
+    if select is None:
+        raise RuntimeError("シーズン選択UIが見つかりませんでした")
+
+    latest_value = None
+    latest_label = None
+    for option in select.find_all("option"):
+        val = option.get("value")
+        if val and val.isdigit():
+            if latest_value is None or int(val) > latest_value:
+                latest_value = int(val)
+                latest_label = " ".join(option.get_text(strip=True).split())
+
+    if latest_value is None:
+        raise RuntimeError("シーズン番号が取得できませんでした")
+
+    return latest_value, latest_label
+
+
 def scrape_page(page: int, season: int | None, rule: int) -> tuple[list[dict], str | None]:
     """
     指定ページのトレーナー一覧を取得する。
