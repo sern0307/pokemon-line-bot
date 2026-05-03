@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# DB は git 管理対象（コメントアウト状態 = 追跡する）
+# data/rankings.db
