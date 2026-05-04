@@ -148,8 +148,24 @@ with tab2:
                 st.altair_chart(rank_chart, use_container_width=True)
 
                 st.markdown("#### レーティング推移")
-                rating_df = history.set_index("日付")[["レーティング"]].copy()
-                st.line_chart(rating_df)
+                r_min = history["レーティング"].min()
+                r_max = history["レーティング"].max()
+                margin = (r_max - r_min) * 0.1 or 10
+                rating_chart = (
+                    alt.Chart(history)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("日付:T", title="日付"),
+                        y=alt.Y(
+                            "レーティング:Q",
+                            title="レーティング",
+                            scale=alt.Scale(domain=[r_min - margin, r_max + margin]),
+                        ),
+                        tooltip=["日付:T", "順位:Q", "レーティング:Q"],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(rating_chart, use_container_width=True)
 
                 st.markdown("#### 履歴テーブル")
                 st.dataframe(
