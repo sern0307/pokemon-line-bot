@@ -63,8 +63,8 @@ def save_rankings(
     同日・同ルール・同順位のレコードは上書き（UPSERT）。
     戻り値: 保存件数
     """
-    today = date.today().isoformat()
-    now = datetime.now(JST).isoformat()
+    now = datetime.now(JST)
+    today = now.date().isoformat()  # JST基準の日付
 
     rows = [
         (
@@ -126,7 +126,7 @@ def get_today_ranking(
     db_path: Path = DB_PATH,
 ) -> list[dict]:
     """今日のランキング全件を返す"""
-    today = date.today().isoformat()
+    today = datetime.now(JST).date().isoformat()
     with _conn(db_path) as conn:
         rows = conn.execute(
             """
@@ -146,7 +146,7 @@ def get_trainer_today(
     db_path: Path = DB_PATH,
 ) -> dict | None:
     """今日のトレーナー順位を返す（同名複数の場合は最上位）。ランク外なら None。"""
-    today = date.today().isoformat()
+    today = datetime.now(JST).date().isoformat()
     with _conn(db_path) as conn:
         row = conn.execute(
             """
