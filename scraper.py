@@ -30,7 +30,7 @@ def get_latest_season(rule: int = 0) -> tuple[int, str]:
     except requests.RequestException as e:
         raise RuntimeError(f"シーズン情報取得失敗: {e}") from e
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, "html.parser")
     select = soup.find("select", {"name": "season"})
     if select is None:
         raise RuntimeError("シーズン選択UIが見つかりませんでした")
@@ -66,7 +66,7 @@ def scrape_page(page: int, season: int | None, rule: int) -> tuple[list[dict], s
     except requests.RequestException as e:
         raise RuntimeError(f"page={page} 取得失敗: {e}") from e
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     # 更新日時（page=1 のみ取得すれば十分）
     updated_at = None
@@ -152,7 +152,7 @@ def get_trainer_rank(trainer_name: str, season: int | None = None, rule: int = 0
     except requests.RequestException as e:
         raise RuntimeError(f"ページ取得失敗: {e}") from e
 
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     updated_at = None
     for tag_el in soup.select("span.tag.is-warning"):
