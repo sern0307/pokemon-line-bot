@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 DB_PATH = Path(__file__).parent / "data" / "rankings.db"
 JST = timezone(timedelta(hours=9))
@@ -127,12 +128,24 @@ with tab2:
                 col2.metric("最新レーティング", f"{latest['レーティング']:,.3f}")
                 col3.metric("記録日数", f"{len(history)}日")
 
-                # 順位推移チャート（順位は小さいほど良いので反転表示）
+                # 順位推移チャート（Y軸反転：1位が上）
                 st.markdown("#### 順位推移")
-                chart_df = history.set_index("日付")[["順位"]].copy()
-                # 順位が小さい=上位なのでY軸を反転
-                st.line_chart(chart_df)
-                st.caption("※ グラフの値が小さいほど上位です")
+                rank_chart = (
+                    alt.Chart(history)
+                    .mark_line(point=True)
+                    .encode(
+                        x=alt.X("日付:T", title="日付"),
+                        y=alt.Y(
+                            "順位:Q",
+                            title="順位",
+                            scale=alt.Scale(reverse=True),
+                            axis=alt.Axis(tickMinStep=1),
+                        ),
+                        tooltip=["日付:T", "順位:Q", "レーティング:Q"],
+                    )
+                    .properties(height=300)
+                )
+                st.altair_chart(rank_chart, use_container_width=True)
 
                 st.markdown("#### レーティング推移")
                 rating_df = history.set_index("日付")[["レーティング"]].copy()
