@@ -17,7 +17,7 @@ st.set_page_config(
 )
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_dates() -> list[str]:
     conn = sqlite3.connect(DB_PATH)
     dates = [r[0] for r in conn.execute(
@@ -27,7 +27,7 @@ def load_dates() -> list[str]:
     return dates
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_ranking(date: str, rule: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query(
@@ -40,7 +40,7 @@ def load_ranking(date: str, rule: int) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def load_history(trainer_name: str, rule: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query(
@@ -53,7 +53,7 @@ def load_history(trainer_name: str, rule: int) -> pd.DataFrame:
     return df
 
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300)
 def search_trainers(query: str, rule: int) -> list[str]:
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
