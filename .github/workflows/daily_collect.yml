@@ -27,9 +27,7 @@ jobs:
       - name: 依存パッケージをインストール
         run: pip install -r requirements.txt
 
-      - name: 全300件を収集して DB に保存
-        env:
-          RULE: ${{ vars.RULE || '0' }}
+      - name: シングル・ダブル全300件を収集して DB に保存
         run: python collect.py
 
       - name: DB ファイルをコミット・プッシュ
