@@ -71,12 +71,12 @@ def search_trainers(query: str, rule: int) -> list[str]:
     return [r[0] for r in rows]
 
 
-def show_trainer_detail(trainer_name: str, rule: int) -> None:
+def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> None:
     """トレーナーの順位・レーティング推移を表示する共通コンポーネント"""
     top_only = st.checkbox(
         "同名トレーナーが複数いる場合は最上位のみ表示",
         value=True,
-        key=f"top_only_{trainer_name}_{rule}",
+        key=f"{key_prefix}top_only_{trainer_name}_{rule}",
     )
     history = load_history(trainer_name, rule, top_only=top_only)
     if history.empty:
@@ -192,7 +192,7 @@ with tab1:
             trainer_name = df.iloc[selected_rows[0]]["トレーナー名"]
             st.session_state.selected_trainer = trainer_name
             st.markdown(f"---\n#### 📈 {trainer_name} の推移")
-            show_trainer_detail(trainer_name, rule)
+            show_trainer_detail(trainer_name, rule, key_prefix="tab1_")
 
 # ========== Tab2: トレーナー検索・推移 ==========
 with tab2:
@@ -212,4 +212,4 @@ with tab2:
             st.warning(f"「{query}」に一致するトレーナーはDBに存在しません。")
         else:
             selected_trainer = st.selectbox("トレーナーを選択", candidates)
-            show_trainer_detail(selected_trainer, rule)
+            show_trainer_detail(selected_trainer, rule, key_prefix="tab2_")
