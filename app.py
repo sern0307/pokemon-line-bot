@@ -1,13 +1,11 @@
 import sqlite3
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
 
-import streamlit as st
-import pandas as pd
 import altair as alt
+import pandas as pd
+import streamlit as st
 
 DB_PATH = Path(__file__).parent / "data" / "rankings.db"
-JST = timezone(timedelta(hours=9))
 RULE_LABEL = {0: "シングルバトル", 1: "ダブルバトル"}
 
 st.set_page_config(
@@ -65,9 +63,69 @@ def search_trainers(query: str, rule: int) -> list[str]:
     return [r[0] for r in rows]
 
 
+def show_trainer_detail(trainer_name: str, rule: int) -> None:
+    """トレーナーの順位・レーティング推移を表示する共通コンポーネント"""
+    history = load_history(trainer_name, rule)
+    if history.empty:
+        st.warning("履歴データがありません。")
+        return
+
+    latest = history.iloc[-1]
+    col1, col2, col3 = st.columns(3)
+    col1.metric("最新順位", f"{int(latest['順位'])}位")
+    col2.metric("最新レーティング", f"{latest['レーティング']:,.3f}")
+    col3.metric("記録日数", f"{len(history)}日")
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### 順位推移")
+        rank_chart = (
+            alt.Chart(history)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y(
+                    "順位:Q",
+                    title="順位",
+                    scale=alt.Scale(reverse=True),
+                    axis=alt.Axis(tickMinStep=1),
+                ),
+                tooltip=["日付:O", "順位:Q", "レーティング:Q"],
+            )
+            .properties(height=260)
+        )
+        st.altair_chart(rank_chart, use_container_width=True)
+
+    with c2:
+        st.markdown("##### レーティング推移")
+        r_min = history["レーティング"].min()
+        r_max = history["レーティング"].max()
+        margin = (r_max - r_min) * 0.1 or 10
+        rating_chart = (
+            alt.Chart(history)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y(
+                    "レーティング:Q",
+                    title="レーティング",
+                    scale=alt.Scale(domain=[r_min - margin, r_max + margin]),
+                ),
+                tooltip=["日付:O", "順位:Q", "レーティング:Q"],
+            )
+            .properties(height=260)
+        )
+        st.altair_chart(rating_chart, use_container_width=True)
+
+    st.dataframe(
+        history.sort_values("日付", ascending=False),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 # --- サイドバー ---
 st.sidebar.title("🏆 ランキング閲覧")
-
 rule = st.sidebar.radio("バトルルール", [0, 1], format_func=lambda x: RULE_LABEL[x])
 
 dates = load_dates()
@@ -76,12 +134,15 @@ if not dates:
     st.stop()
 
 selected_date = st.sidebar.selectbox("日付", dates)
-
 st.sidebar.markdown("---")
 st.sidebar.caption(f"最終収集: {dates[0]}")
 st.sidebar.caption(f"蓄積日数: {len(dates)}日分")
 
-# --- メインエリア ---
+# session_state の初期化
+if "selected_trainer" not in st.session_state:
+    st.session_state.selected_trainer = ""
+
+# --- タブ ---
 tab1, tab2 = st.tabs(["📋 ランキング一覧", "📈 トレーナー検索・推移"])
 
 # ========== Tab1: ランキング一覧 ==========
@@ -92,24 +153,41 @@ with tab1:
     if df.empty:
         st.warning("この日付のデータはありません。")
     else:
-        updated = df["サイト更新日時"].iloc[0] if not df.empty else "-"
+        updated = df["サイト更新日時"].iloc[0]
         col1, col2, col3 = st.columns(3)
         col1.metric("取得件数", f"{len(df)} 件")
         col2.metric("1位レーティング", f"{df['レーティング'].max():,.3f}")
         col3.metric("サイト更新日時", updated)
 
-        st.dataframe(
+        st.caption("👆 行を選択するとトレーナー詳細を表示します")
+        event = st.dataframe(
             df[["順位", "トレーナー名", "レーティング"]],
             use_container_width=True,
             hide_index=True,
-            height=600,
+            height=400,
+            on_select="rerun",
+            selection_mode="single-row",
         )
+
+        # 行選択時の処理
+        selected_rows = event.selection.rows
+        if selected_rows:
+            trainer_name = df.iloc[selected_rows[0]]["トレーナー名"]
+            st.session_state.selected_trainer = trainer_name
+            st.markdown(f"---\n#### 📈 {trainer_name} の推移")
+            show_trainer_detail(trainer_name, rule)
 
 # ========== Tab2: トレーナー検索・推移 ==========
 with tab2:
     st.subheader("トレーナー検索")
 
-    query = st.text_input("トレーナー名を入力", placeholder="例: ジェミニ")
+    query = st.text_input(
+        "トレーナー名を入力",
+        value=st.session_state.selected_trainer,
+        placeholder="例: ジェミニ",
+    )
+    # 入力が変わったら session_state を更新
+    st.session_state.selected_trainer = query
 
     if query:
         candidates = search_trainers(query, rule)
@@ -117,59 +195,4 @@ with tab2:
             st.warning(f"「{query}」に一致するトレーナーはDBに存在しません。")
         else:
             selected_trainer = st.selectbox("トレーナーを選択", candidates)
-
-            history = load_history(selected_trainer, rule)
-            if history.empty:
-                st.warning("履歴データがありません。")
-            else:
-                latest = history.iloc[-1]
-                col1, col2, col3 = st.columns(3)
-                col1.metric("最新順位", f"{int(latest['順位'])}位")
-                col2.metric("最新レーティング", f"{latest['レーティング']:,.3f}")
-                col3.metric("記録日数", f"{len(history)}日")
-
-                # 順位推移チャート（Y軸反転：1位が上）
-                st.markdown("#### 順位推移")
-                rank_chart = (
-                    alt.Chart(history)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
-                        y=alt.Y(
-                            "順位:Q",
-                            title="順位",
-                            scale=alt.Scale(reverse=True),
-                            axis=alt.Axis(tickMinStep=1),
-                        ),
-                        tooltip=["日付:O", "順位:Q", "レーティング:Q"],
-                    )
-                    .properties(height=300)
-                )
-                st.altair_chart(rank_chart, use_container_width=True)
-
-                st.markdown("#### レーティング推移")
-                r_min = history["レーティング"].min()
-                r_max = history["レーティング"].max()
-                margin = (r_max - r_min) * 0.1 or 10
-                rating_chart = (
-                    alt.Chart(history)
-                    .mark_line(point=True)
-                    .encode(
-                        x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
-                        y=alt.Y(
-                            "レーティング:Q",
-                            title="レーティング",
-                            scale=alt.Scale(domain=[r_min - margin, r_max + margin]),
-                        ),
-                        tooltip=["日付:O", "順位:Q", "レーティング:Q"],
-                    )
-                    .properties(height=300)
-                )
-                st.altair_chart(rating_chart, use_container_width=True)
-
-                st.markdown("#### 履歴テーブル")
-                st.dataframe(
-                    history.sort_values("日付", ascending=False),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+            show_trainer_detail(selected_trainer, rule)
