@@ -154,10 +154,9 @@ with tab1:
         st.warning("この日付のデータはありません。")
     else:
         updated = df["サイト更新日時"].iloc[0]
-        col1, col2, col3 = st.columns(3)
-        col1.metric("取得件数", f"{len(df)} 件")
-        col2.metric("1位レーティング", f"{df['レーティング'].max():,.3f}")
-        col3.metric("サイト更新日時", updated)
+        col1, col2 = st.columns(2)
+        col1.metric("1位レーティング", f"{df['レーティング'].max():,.3f}")
+        col2.metric("サイト更新日時", updated)
 
         st.caption("👆 行を選択するとトレーナー詳細を表示します")
         event = st.dataframe(
@@ -167,6 +166,11 @@ with tab1:
             height=400,
             on_select="rerun",
             selection_mode="single-row",
+            column_config={
+                "順位":       st.column_config.NumberColumn(width="small"),
+                "トレーナー名": st.column_config.TextColumn(width="small", max_chars=12),
+                "レーティング": st.column_config.NumberColumn(width="small", format="%.3f"),
+            },
         )
 
         # 行選択時の処理
