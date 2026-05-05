@@ -70,6 +70,28 @@ def load_history(trainer_name: str, rule: int, top_only: bool = True) -> pd.Data
 
 
 @st.cache_data(ttl=300)
+def load_avg_rating(rule: int) -> pd.DataFrame:
+    conn = sqlite3.connect(DB_PATH)
+    df = pd.read_sql_query(
+        """
+        SELECT
+            date,
+            ROUND(AVG(rating), 3)  AS 平均レーティング,
+            ROUND(MAX(rating), 3)  AS 最高レーティング,
+            ROUND(MIN(rating), 3)  AS 最低レーティング
+        FROM rankings
+        WHERE rule = ?
+        GROUP BY date
+        ORDER BY date
+        """,
+        conn, params=(rule,)
+    )
+    conn.close()
+    df.columns = ["日付", "平均レーティング", "最高レーティング", "最低レーティング"]
+    return df
+
+
+@st.cache_data(ttl=300)
 def search_trainers(query: str, rule: int) -> list[str]:
     conn = sqlite3.connect(DB_PATH)
     rows = conn.execute(
@@ -188,7 +210,7 @@ if "selected_trainer" not in st.session_state:
     st.session_state.selected_trainer = ""
 
 # --- タブ ---
-tab1, tab2 = st.tabs(["📋 ランキング一覧", "📈 トレーナー検索・推移"])
+tab1, tab2, tab3 = st.tabs(["📋 ランキング一覧", "📈 トレーナー検索・推移", "📊 平均レート推移"])
 
 # ========== Tab1: ランキング一覧 ==========
 with tab1:
@@ -245,3 +267,53 @@ with tab2:
         else:
             selected_trainer = st.selectbox("トレーナーを選択", candidates)
             show_trainer_detail(selected_trainer, rule, key_prefix="tab2_")
+
+# ========== Tab3: 平均レート推移 ==========
+with tab3:
+    st.subheader(f"上位300人 平均レーティング推移（{RULE_LABEL[rule]}）")
+
+    avg_df = load_avg_rating(rule)
+    if avg_df.empty:
+        st.warning("データがありません。")
+    else:
+        # 最新日のメトリクス
+        latest = avg_df.iloc[-1]
+        prev = avg_df.iloc[-2] if len(avg_df) >= 2 else None
+        c1, c2, c3 = st.columns(3)
+        diff = round(latest["平均レーティング"] - prev["平均レーティング"], 3) if prev is not None else None
+        c1.metric("最新 平均レーティング", f"{latest['平均レーティング']:,.3f}",
+                  delta=f"{diff:+.3f}" if diff is not None else None)
+        c2.metric("最新 最高レーティング", f"{latest['最高レーティング']:,.3f}")
+        c3.metric("最新 最低レーティング", f"{latest['最低レーティング']:,.3f}")
+
+        # 平均・最高・最低をまとめてプロット
+        melted = avg_df.melt(id_vars="日付", var_name="指標", value_name="レーティング")
+        r_min = avg_df["最低レーティング"].min()
+        r_max = avg_df["最高レーティング"].max()
+        margin = (r_max - r_min) * 0.05 or 10
+
+        chart = (
+            alt.Chart(melted)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y("レーティング:Q",
+                        scale=alt.Scale(domain=[r_min - margin, r_max + margin])),
+                color=alt.Color("指標:N", legend=alt.Legend(title="指標")),
+                strokeDash=alt.condition(
+                    alt.datum["指標"] == "平均レーティング",
+                    alt.value([0]),
+                    alt.value([4, 4]),
+                ),
+                tooltip=["日付:O", "指標:N", "レーティング:Q"],
+            )
+            .properties(height=400)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+        st.markdown("#### 集計テーブル")
+        st.dataframe(
+            avg_df.sort_values("日付", ascending=False),
+            use_container_width=True,
+            hide_index=True,
+        )
