@@ -134,14 +134,14 @@ with tab2:
                     alt.Chart(history)
                     .mark_line(point=True)
                     .encode(
-                        x=alt.X("日付:T", title="日付"),
+                        x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
                         y=alt.Y(
                             "順位:Q",
                             title="順位",
                             scale=alt.Scale(reverse=True),
                             axis=alt.Axis(tickMinStep=1),
                         ),
-                        tooltip=["日付:T", "順位:Q", "レーティング:Q"],
+                        tooltip=["日付:O", "順位:Q", "レーティング:Q"],
                     )
                     .properties(height=300)
                 )
@@ -155,13 +155,13 @@ with tab2:
                     alt.Chart(history)
                     .mark_line(point=True)
                     .encode(
-                        x=alt.X("日付:T", title="日付"),
+                        x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
                         y=alt.Y(
                             "レーティング:Q",
                             title="レーティング",
                             scale=alt.Scale(domain=[r_min - margin, r_max + margin]),
                         ),
-                        tooltip=["日付:T", "順位:Q", "レーティング:Q"],
+                        tooltip=["日付:O", "順位:Q", "レーティング:Q"],
                     )
                     .properties(height=300)
                 )
