@@ -39,14 +39,21 @@ def load_ranking(date: str, rule: int) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_history(trainer_name: str, rule: int) -> pd.DataFrame:
+def load_history(trainer_name: str, rule: int, top_only: bool = True) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
-    # 同日に同名トレーナーが複数いる場合は最上位（最小rank）のみ取得
-    df = pd.read_sql_query(
-        "SELECT date, MIN(rank) as rank, rating FROM rankings "
-        "WHERE trainer_name=? AND rule=? GROUP BY date ORDER BY date",
-        conn, params=(trainer_name, rule)
-    )
+    if top_only:
+        # 同日に同名トレーナーが複数いる場合は最上位（最小rank）のみ取得
+        df = pd.read_sql_query(
+            "SELECT date, MIN(rank) as rank, rating FROM rankings "
+            "WHERE trainer_name=? AND rule=? GROUP BY date ORDER BY date",
+            conn, params=(trainer_name, rule)
+        )
+    else:
+        df = pd.read_sql_query(
+            "SELECT date, rank, rating FROM rankings "
+            "WHERE trainer_name=? AND rule=? ORDER BY date, rank",
+            conn, params=(trainer_name, rule)
+        )
     conn.close()
     df.columns = ["日付", "順位", "レーティング"]
     return df
@@ -66,7 +73,12 @@ def search_trainers(query: str, rule: int) -> list[str]:
 
 def show_trainer_detail(trainer_name: str, rule: int) -> None:
     """トレーナーの順位・レーティング推移を表示する共通コンポーネント"""
-    history = load_history(trainer_name, rule)
+    top_only = st.checkbox(
+        "同名トレーナーが複数いる場合は最上位のみ表示",
+        value=True,
+        key=f"top_only_{trainer_name}_{rule}",
+    )
+    history = load_history(trainer_name, rule, top_only=top_only)
     if history.empty:
         st.warning("履歴データがありません。")
         return
