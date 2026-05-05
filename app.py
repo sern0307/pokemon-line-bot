@@ -265,8 +265,7 @@ with tab2:
         if not candidates:
             st.warning(f"「{query}」に一致するトレーナーはDBに存在しません。")
         else:
-            selected_trainer = st.selectbox("トレーナーを選択", candidates)
-            show_trainer_detail(selected_trainer, rule, key_prefix="tab2_")
+            show_trainer_detail(candidates[0], rule, key_prefix="tab2_")
 
 # ========== Tab3: 平均レート推移 ==========
 with tab3:
