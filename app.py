@@ -41,9 +41,10 @@ def load_ranking(date: str, rule: int) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_history(trainer_name: str, rule: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
+    # 同日に同名トレーナーが複数いる場合は最上位（最小rank）のみ取得
     df = pd.read_sql_query(
-        "SELECT date, rank, rating FROM rankings "
-        "WHERE trainer_name=? AND rule=? ORDER BY date",
+        "SELECT date, MIN(rank) as rank, rating FROM rankings "
+        "WHERE trainer_name=? AND rule=? GROUP BY date ORDER BY date",
         conn, params=(trainer_name, rule)
     )
     conn.close()
@@ -158,15 +159,9 @@ with tab1:
         col1.metric("1位レーティング", f"{df['レーティング'].max():,.3f}")
         col2.metric("サイト更新日時", updated)
 
-        dedup = st.checkbox("同名トレーナーが複数いる場合は最上位のみ表示", value=True)
-        display_df = (
-            df.drop_duplicates(subset="トレーナー名", keep="first")
-            if dedup else df
-        )
-
         st.caption("👆 行を選択するとトレーナー詳細を表示します")
         event = st.dataframe(
-            display_df[["順位", "トレーナー名", "レーティング"]],
+            df[["順位", "トレーナー名", "レーティング"]],
             use_container_width=True,
             hide_index=True,
             height=400,
@@ -182,7 +177,7 @@ with tab1:
         # 行選択時の処理
         selected_rows = event.selection.rows
         if selected_rows:
-            trainer_name = display_df.iloc[selected_rows[0]]["トレーナー名"]
+            trainer_name = df.iloc[selected_rows[0]]["トレーナー名"]
             st.session_state.selected_trainer = trainer_name
             st.markdown(f"---\n#### 📈 {trainer_name} の推移")
             show_trainer_detail(trainer_name, rule)
