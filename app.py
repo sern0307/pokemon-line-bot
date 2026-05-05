@@ -41,20 +41,30 @@ def load_ranking(date: str, rule: int) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_history(trainer_name: str, rule: int, top_only: bool = True) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
+
+    # データが収集されている全日付（該当ルール）
+    all_dates = pd.read_sql_query(
+        "SELECT DISTINCT date FROM rankings WHERE rule=? ORDER BY date",
+        conn, params=(rule,)
+    )
+
     if top_only:
-        # 同日に同名トレーナーが複数いる場合は最上位（最小rank）のみ取得
-        df = pd.read_sql_query(
+        trainer_df = pd.read_sql_query(
             "SELECT date, MIN(rank) as rank, rating FROM rankings "
             "WHERE trainer_name=? AND rule=? GROUP BY date ORDER BY date",
             conn, params=(trainer_name, rule)
         )
     else:
-        df = pd.read_sql_query(
+        trainer_df = pd.read_sql_query(
             "SELECT date, rank, rating FROM rankings "
             "WHERE trainer_name=? AND rule=? ORDER BY date, rank",
             conn, params=(trainer_name, rule)
         )
+
     conn.close()
+
+    # 全収集日と LEFT JOIN してランク外を補完
+    df = all_dates.merge(trainer_df, on="date", how="left")
     df.columns = ["日付", "順位", "レーティング"]
     return df
 
@@ -83,55 +93,77 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
         st.warning("履歴データがありません。")
         return
 
+    # ランク外の日はグラフ用に 301 を使用、表示用は別列に保持
+    RANK_OUT = 301
+    history["ランク外"] = history["順位"].isna()
+    history["順位_表示"] = history["順位"].apply(
+        lambda x: "ランク外" if pd.isna(x) else f"{int(x)}位"
+    )
+    history["順位_グラフ"] = history["順位"].fillna(RANK_OUT)
+
+    # メトリクス（最新のランクイン日を参照）
+    ranked = history.dropna(subset=["順位"])
+    latest_ranked = ranked.iloc[-1] if not ranked.empty else None
     latest = history.iloc[-1]
+
     col1, col2, col3 = st.columns(3)
-    col1.metric("最新順位", f"{int(latest['順位'])}位")
-    col2.metric("最新レーティング", f"{latest['レーティング']:,.3f}")
-    col3.metric("記録日数", f"{len(history)}日")
+    col1.metric("最新順位", latest["順位_表示"])
+    col2.metric("最新レーティング",
+                f"{latest['レーティング']:,.3f}" if pd.notna(latest["レーティング"]) else "―")
+    col3.metric("記録日数", f"{len(history)}日（うちランクイン {len(ranked)}日）")
 
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("##### 順位推移")
-        rank_chart = (
-            alt.Chart(history)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y(
-                    "順位:Q",
-                    title="順位",
-                    scale=alt.Scale(reverse=True),
-                    axis=alt.Axis(tickMinStep=1),
-                ),
-                tooltip=["日付:O", "順位:Q", "レーティング:Q"],
-            )
-            .properties(height=260)
+        # ランクイン時：実線、ランク外：点線で区別
+        base = alt.Chart(history).encode(
+            x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
+            tooltip=["日付:O", "順位_表示:N", "レーティング:Q"],
         )
-        st.altair_chart(rank_chart, use_container_width=True)
+        line = base.mark_line().encode(
+            y=alt.Y("順位_グラフ:Q", title="順位",
+                    scale=alt.Scale(reverse=True, domainMax=RANK_OUT + 5),
+                    axis=alt.Axis(tickMinStep=1,
+                                  values=list(range(0, 301, 50)) + [RANK_OUT],
+                                  labelExpr=f"datum.value == {RANK_OUT} ? 'ランク外' : datum.value")),
+            strokeDash=alt.condition(
+                alt.datum["ランク外"], alt.value([4, 4]), alt.value([0])
+            ),
+        )
+        points = base.mark_point(size=60).encode(
+            y=alt.Y("順位_グラフ:Q", scale=alt.Scale(reverse=True)),
+            color=alt.condition(
+                alt.datum["ランク外"], alt.value("gray"), alt.value("#1f77b4")
+            ),
+        )
+        st.altair_chart((line + points).properties(height=260), use_container_width=True)
 
     with c2:
         st.markdown("##### レーティング推移")
-        r_min = history["レーティング"].min()
-        r_max = history["レーティング"].max()
-        margin = (r_max - r_min) * 0.1 or 10
-        rating_chart = (
-            alt.Chart(history)
-            .mark_line(point=True)
-            .encode(
-                x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y(
-                    "レーティング:Q",
-                    title="レーティング",
-                    scale=alt.Scale(domain=[r_min - margin, r_max + margin]),
-                ),
-                tooltip=["日付:O", "順位:Q", "レーティング:Q"],
+        r_vals = history["レーティング"].dropna()
+        if not r_vals.empty:
+            r_min, r_max = r_vals.min(), r_vals.max()
+            margin = (r_max - r_min) * 0.1 or 10
+            rating_chart = (
+                alt.Chart(history.dropna(subset=["レーティング"]))
+                .mark_line(point=True)
+                .encode(
+                    x=alt.X("日付:O", title="日付", axis=alt.Axis(labelAngle=-45)),
+                    y=alt.Y("レーティング:Q",
+                            scale=alt.Scale(domain=[r_min - margin, r_max + margin])),
+                    tooltip=["日付:O", "順位_表示:N", "レーティング:Q"],
+                )
+                .properties(height=260)
             )
-            .properties(height=260)
-        )
-        st.altair_chart(rating_chart, use_container_width=True)
+            st.altair_chart(rating_chart, use_container_width=True)
+        else:
+            st.info("レーティングデータがありません。")
 
+    # 表示用テーブル
+    table_df = history[["日付", "順位_表示", "レーティング"]].copy()
+    table_df.columns = ["日付", "順位", "レーティング"]
     st.dataframe(
-        history.sort_values("日付", ascending=False),
+        table_df.sort_values("日付", ascending=False),
         use_container_width=True,
         hide_index=True,
     )
