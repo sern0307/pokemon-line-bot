@@ -2,8 +2,8 @@ name: 毎日定時ランキング収集
 
 on:
   schedule:
-    # 毎日 JST 08:00 (= UTC 23:00 前日)
-    - cron: "0 23 * * *"
+    # 毎日 JST 04:00 (= UTC 19:00 前日)
+    - cron: "0 19 * * *"
   workflow_dispatch:  # 手動実行ボタン
 
 permissions:
