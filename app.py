@@ -101,6 +101,18 @@ section[data-testid="stSidebar"] > div:first-child { padding-top: 1.8rem; }
 """, unsafe_allow_html=True)
 
 
+# ══════════════════ Name normalization (OCR誤認識対策) ══════════════════
+# 小文字カナ → 大文字カナ（例: ジェミニ ↔ ジエミニ）
+_SMALL_TO_LARGE = str.maketrans(
+    "ァィゥェォッャュョぁぃぅぇぉっゃゅょ",
+    "アイウエオツヤユヨあいうえおつやゆよ",
+)
+
+def normalize_name(name: str) -> str:
+    """小文字カナを大文字に統一し、表記ゆれを吸収する。"""
+    return name.translate(_SMALL_TO_LARGE)
+
+
 # ═══════════════════════ Chart helper ═══════════════════════
 def _styled(chart, height: int | None = None):
     if height:
@@ -142,23 +154,41 @@ def load_ranking(date: str, rule: int) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_history(trainer_name: str, rule: int, top_only: bool = True) -> pd.DataFrame:
+def find_name_variants(trainer_name: str, rule: int) -> tuple[str, ...]:
+    """
+    正規化後に同一となる全表記バリアントを返す（自身を含む）。
+    例: "ジェミニ" → ("ジェミニ", "ジエミニ")
+    """
+    conn = sqlite3.connect(DB_PATH)
+    all_names = [r[0] for r in conn.execute(
+        "SELECT DISTINCT trainer_name FROM rankings WHERE rule=?", (rule,)
+    ).fetchall()]
+    conn.close()
+    target = normalize_name(trainer_name)
+    return tuple(sorted(n for n in all_names if normalize_name(n) == target))
+
+
+@st.cache_data(ttl=300)
+def load_history(trainer_names: tuple[str, ...], rule: int, top_only: bool = True) -> pd.DataFrame:
+    """複数の表記バリアントをまとめて集計する。"""
     conn = sqlite3.connect(DB_PATH)
     all_dates = pd.read_sql_query(
         "SELECT DISTINCT date FROM rankings WHERE rule=? ORDER BY date",
         conn, params=(rule,),
     )
+    ph = ",".join(["?"] * len(trainer_names))
     if top_only:
         trainer_df = pd.read_sql_query(
-            "SELECT date, MIN(rank) as rank, rating FROM rankings "
-            "WHERE trainer_name=? AND rule=? GROUP BY date ORDER BY date",
-            conn, params=(trainer_name, rule),
+            f"SELECT date, MIN(rank) as rank, "
+            f"  rating FROM rankings "
+            f"WHERE trainer_name IN ({ph}) AND rule=? GROUP BY date ORDER BY date",
+            conn, params=(*trainer_names, rule),
         )
     else:
         trainer_df = pd.read_sql_query(
-            "SELECT date, rank, rating FROM rankings "
-            "WHERE trainer_name=? AND rule=? ORDER BY date, rank",
-            conn, params=(trainer_name, rule),
+            f"SELECT date, rank, rating FROM rankings "
+            f"WHERE trainer_name IN ({ph}) AND rule=? ORDER BY date, rank",
+            conn, params=(*trainer_names, rule),
         )
     conn.close()
     df = all_dates.merge(trainer_df, on="date", how="left")
@@ -187,24 +217,48 @@ def load_avg_rating(rule: int) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def search_trainers(query: str, rule: int) -> list[str]:
+    """名前でDBを検索。正規化後の一致も含め、表記ゆれを網羅する。"""
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute(
-        "SELECT DISTINCT trainer_name FROM rankings "
-        "WHERE trainer_name LIKE ? AND rule=? ORDER BY trainer_name",
-        (f"%{query}%", rule),
-    ).fetchall()
+    all_names = [r[0] for r in conn.execute(
+        "SELECT DISTINCT trainer_name FROM rankings WHERE rule=? ORDER BY trainer_name",
+        (rule,),
+    ).fetchall()]
     conn.close()
-    return [r[0] for r in rows]
+
+    norm_q = normalize_name(query)
+
+    # 1) 部分一致（元のクエリ）
+    exact = [n for n in all_names if query in n]
+    seen_norm = {normalize_name(n) for n in exact}
+
+    # 2) 正規化後に一致するが上記に含まれない名前（代表1件のみ）
+    by_norm: list[str] = []
+    for name in all_names:
+        nn = normalize_name(name)
+        if nn == norm_q and name not in exact and nn not in seen_norm:
+            by_norm.append(name)
+            seen_norm.add(nn)
+
+    return exact + by_norm
 
 
 # ═══════════════════ Trainer detail component ═══════════════════
 def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> None:
+    # ── 表記ゆれ検出 ──
+    all_variants = find_name_variants(trainer_name, rule)
+    other_variants = [v for v in all_variants if v != trainer_name]
+    if other_variants:
+        st.info(
+            f"🔗 表記ゆれの可能性がある別名と合わせて集計しています："
+            f"**{'、'.join(other_variants)}**"
+        )
+
     top_only = st.checkbox(
         "同名トレーナーが複数いる場合は最上位のみ表示",
         value=True,
         key=f"{key_prefix}top_only_{trainer_name}_{rule}",
     )
-    history = load_history(trainer_name, rule, top_only=top_only)
+    history = load_history(all_variants, rule, top_only=top_only)
     if history.empty:
         st.warning("履歴データがありません。")
         return
