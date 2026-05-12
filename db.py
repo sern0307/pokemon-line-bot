@@ -35,6 +35,11 @@ def init_db(db_path: Path = DB_PATH) -> None:
             CREATE INDEX IF NOT EXISTS ix_trainer_name
                 ON rankings(trainer_name);
         """)
+        # 既存DBへのマイグレーション: season カラムがなければ追加
+        try:
+            conn.execute("ALTER TABLE rankings ADD COLUMN season TEXT")
+        except Exception:
+            pass  # 既にカラムが存在する場合は無視
 
 
 @contextmanager

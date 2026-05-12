@@ -18,17 +18,20 @@ RULES = {0: "シングルバトル", 1: "ダブルバトル"}
 
 
 def collect_rule(rule: int, season_int: int | None) -> None:
-    label = RULES[rule]
-
     if season_int is None:
         season_int, season_label = get_latest_season(rule=rule)
         print(f"  最新シーズン自動検出: {season_int}（{season_label}）")
+    else:
+        # 手動指定時はサイトからラベルを取得して一致するものを使う
+        latest_int, latest_label = get_latest_season(rule=rule)
+        season_label = latest_label if latest_int == season_int else f"シーズン{season_int}"
+        print(f"  シーズン指定: {season_int}（{season_label}）")
 
     print(f"  全300件を取得中...")
     trainers, site_updated_at = scrape_all(season=season_int, rule=rule)
     print(f"  取得完了: {len(trainers)}件  サイト更新日時: {site_updated_at}")
 
-    saved = save_rankings(trainers, rule=rule, site_updated_at=site_updated_at)
+    saved = save_rankings(trainers, rule=rule, season=season_label, site_updated_at=site_updated_at)
     print(f"  DB保存完了: {saved}件")
 
 

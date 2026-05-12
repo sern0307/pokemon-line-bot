@@ -144,13 +144,25 @@ def load_dates() -> list[str]:
 def load_ranking(date: str, rule: int) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query(
-        "SELECT rank, trainer_name, rating, site_updated_at "
+        "SELECT rank, trainer_name, rating, season, site_updated_at "
         "FROM rankings WHERE date=? AND rule=? ORDER BY rank",
         conn, params=(date, rule),
     )
     conn.close()
-    df.columns = ["順位", "トレーナー名", "レーティング", "サイト更新日時"]
+    df.columns = ["順位", "トレーナー名", "レーティング", "シーズン", "サイト更新日時"]
     return df
+
+
+@st.cache_data(ttl=300)
+def load_season_for_date(date: str, rule: int) -> str:
+    """指定日付・ルールのシーズン名を返す。未記録なら空文字。"""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT season FROM rankings WHERE date=? AND rule=? AND season IS NOT NULL LIMIT 1",
+        (date, rule),
+    ).fetchone()
+    conn.close()
+    return row[0] if row else ""
 
 
 @st.cache_data(ttl=300)
@@ -383,6 +395,8 @@ st.sidebar.markdown(f"""
 if "selected_trainer" not in st.session_state:
     st.session_state.selected_trainer = ""
 
+season_label = load_season_for_date(selected_date, rule)
+season_str = f"　／　{season_label}" if season_label else ""
 
 # ═══════════════════════ Hero Header ═══════════════════════════
 st.markdown(f"""
@@ -391,7 +405,7 @@ st.markdown(f"""
   <div>
     <div class="hero-title">ポケモンチャンピオンズ ランキング</div>
     <div class="hero-sub">
-      {RULE_ICON[rule]}&nbsp;{RULE_LABEL[rule]}　／　集計日：{selected_date}　／　蓄積 {len(dates)} 日分
+      {RULE_ICON[rule]}&nbsp;{RULE_LABEL[rule]}　／　集計日：{selected_date}{season_str}　／　蓄積 {len(dates)} 日分
     </div>
   </div>
 </div>
@@ -411,10 +425,15 @@ with tab1:
         updated = df["サイト更新日時"].iloc[0]
         top_rating = df["レーティング"].max()
         p300_rating = df["レーティング"].min()
+        tab1_season = df["シーズン"].dropna().iloc[0] if df["シーズン"].notna().any() else "―"
 
         # Stats row (custom HTML cards)
         st.markdown(f"""
         <div class="scards">
+          <div class="sc">
+            <div class="sc-label">シーズン</div>
+            <div class="sc-value-sm">{tab1_season}</div>
+          </div>
           <div class="sc">
             <div class="sc-label">1 位レーティング</div>
             <div class="sc-value">{top_rating:,.3f}</div>
