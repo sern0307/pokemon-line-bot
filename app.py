@@ -167,22 +167,27 @@ def load_date_options(season: str | None, rule: int) -> list[tuple[str, int]]:
     新しい日付順、同日は最終結果を先に。
     """
     conn = sqlite3.connect(DB_PATH)
+    has_is_final = bool(conn.execute(
+        "SELECT 1 FROM pragma_table_info('rankings') WHERE name='is_final'"
+    ).fetchone())
+
+    if has_is_final:
+        select_col = "is_final"
+        order = "date DESC, is_final DESC"
+    else:
+        select_col = "0 AS is_final"
+        order = "date DESC"
+
     if season is None:
         rows = conn.execute(
-            """
-            SELECT DISTINCT date, is_final FROM rankings
-            WHERE rule=?
-            ORDER BY date DESC, is_final DESC
-            """,
+            f"SELECT DISTINCT date, {select_col} FROM rankings "
+            f"WHERE rule=? ORDER BY {order}",
             (rule,),
         ).fetchall()
     else:
         rows = conn.execute(
-            """
-            SELECT DISTINCT date, is_final FROM rankings
-            WHERE rule=? AND season=?
-            ORDER BY date DESC, is_final DESC
-            """,
+            f"SELECT DISTINCT date, {select_col} FROM rankings "
+            f"WHERE rule=? AND season=? ORDER BY {order}",
             (rule, season),
         ).fetchall()
     conn.close()
@@ -192,11 +197,21 @@ def load_date_options(season: str | None, rule: int) -> list[tuple[str, int]]:
 @st.cache_data(ttl=300)
 def load_ranking(date: str, rule: int, is_final: int = 0) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(
-        "SELECT rank, trainer_name, rating, season, site_updated_at "
-        "FROM rankings WHERE date=? AND rule=? AND is_final=? ORDER BY rank",
-        conn, params=(date, rule, is_final),
-    )
+    has_is_final = bool(conn.execute(
+        "SELECT 1 FROM pragma_table_info('rankings') WHERE name='is_final'"
+    ).fetchone())
+    if has_is_final:
+        df = pd.read_sql_query(
+            "SELECT rank, trainer_name, rating, season, site_updated_at "
+            "FROM rankings WHERE date=? AND rule=? AND is_final=? ORDER BY rank",
+            conn, params=(date, rule, is_final),
+        )
+    else:
+        df = pd.read_sql_query(
+            "SELECT rank, trainer_name, rating, season, site_updated_at "
+            "FROM rankings WHERE date=? AND rule=? ORDER BY rank",
+            conn, params=(date, rule),
+        )
     conn.close()
     df.columns = ["順位", "トレーナー名", "レーティング", "シーズン", "サイト更新日時"]
     return df
@@ -237,20 +252,36 @@ def load_history(trainer_names: tuple[str, ...], rule: int, top_only: bool = Tru
     同日に定時・最終の両データがある場合は最終結果（is_final=1）を優先使用。
     """
     conn = sqlite3.connect(DB_PATH)
-    all_dates = pd.read_sql_query(
-        # 定時収集の日付のみを軸とする（最終結果単独の日は含まない）
-        "SELECT DISTINCT date FROM rankings WHERE rule=? AND is_final=0 ORDER BY date",
-        conn, params=(rule,),
-    )
     ph = ",".join(["?"] * len(trainer_names))
 
-    # 全データ取得（定時・最終の両方）
-    raw = pd.read_sql_query(
-        f"SELECT date, rank, rating, is_final FROM rankings "
-        f"WHERE trainer_name IN ({ph}) AND rule=? "
-        f"ORDER BY date, is_final DESC, rank ASC",
-        conn, params=(*trainer_names, rule),
-    )
+    # is_final カラムが存在するか確認（旧DBへの後方互換）
+    has_is_final = bool(conn.execute(
+        "SELECT 1 FROM pragma_table_info('rankings') WHERE name='is_final'"
+    ).fetchone())
+
+    if has_is_final:
+        all_dates = pd.read_sql_query(
+            "SELECT DISTINCT date FROM rankings WHERE rule=? AND is_final=0 ORDER BY date",
+            conn, params=(rule,),
+        )
+        raw = pd.read_sql_query(
+            f"SELECT date, rank, rating, is_final FROM rankings "
+            f"WHERE trainer_name IN ({ph}) AND rule=? "
+            f"ORDER BY date, is_final DESC, rank ASC",
+            conn, params=(*trainer_names, rule),
+        )
+    else:
+        # 旧DB（is_final なし）: 全データを定時収集扱いで取得
+        all_dates = pd.read_sql_query(
+            "SELECT DISTINCT date FROM rankings WHERE rule=? ORDER BY date",
+            conn, params=(rule,),
+        )
+        raw = pd.read_sql_query(
+            f"SELECT date, rank, rating, 0 AS is_final FROM rankings "
+            f"WHERE trainer_name IN ({ph}) AND rule=? "
+            f"ORDER BY date, rank ASC",
+            conn, params=(*trainer_names, rule),
+        )
     conn.close()
 
     if raw.empty:
@@ -281,13 +312,17 @@ def load_history(trainer_names: tuple[str, ...], rule: int, top_only: bool = Tru
 def load_avg_rating(rule: int) -> pd.DataFrame:
     """定時収集データのみを使った平均レート推移（最終結果は除外）。"""
     conn = sqlite3.connect(DB_PATH)
+    has_is_final = bool(conn.execute(
+        "SELECT 1 FROM pragma_table_info('rankings') WHERE name='is_final'"
+    ).fetchone())
+    where = "rule=? AND is_final=0" if has_is_final else "rule=?"
     df = pd.read_sql_query(
-        """
+        f"""
         SELECT date,
                ROUND(AVG(rating), 3) AS avg,
                ROUND(MAX(rating), 3) AS max,
                ROUND(MIN(rating), 3) AS min
-        FROM rankings WHERE rule=? AND is_final=0
+        FROM rankings WHERE {where}
         GROUP BY date ORDER BY date
         """,
         conn, params=(rule,),
@@ -344,6 +379,10 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
     if history.empty:
         st.warning("履歴データがありません。")
         return
+
+    # 後方互換: is_final 未対応DBからのキャッシュ等で列が欠落する場合
+    if "最終結果" not in history.columns:
+        history["最終結果"] = False
 
     history["ランク外"] = history["順位"].isna()
     history["順位_表示"] = history["順位"].apply(
