@@ -30,17 +30,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
             )
         """)
 
-        # ── インデックス作成（is_final を含む新版） ──
-        conn.execute("""
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_rankings_main
-                ON rankings(date, rule, rank, trainer_name, is_final)
-        """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS ix_trainer_name
-                ON rankings(trainer_name)
-        """)
-
-        # ── 既存DBへのカラム追加マイグレーション ──
+        # ── カラム追加マイグレーション（※インデックス作成より必ず先に実行） ──
         for stmt in [
             "ALTER TABLE rankings ADD COLUMN season TEXT",
             "ALTER TABLE rankings ADD COLUMN is_final INTEGER NOT NULL DEFAULT 0",
@@ -50,8 +40,17 @@ def init_db(db_path: Path = DB_PATH) -> None:
             except Exception:
                 pass  # カラムが既に存在する場合は無視
 
+        # ── インデックス作成（is_final カラム追加後に実行） ──
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_rankings_main
+                ON rankings(date, rule, rank, trainer_name, is_final)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS ix_trainer_name
+                ON rankings(trainer_name)
+        """)
+
         # ── 旧 UNIQUE INDEX（is_final なし）を削除 ──
-        # 旧インデックスが残っていると同日に定時・最終の両レコードが共存できない
         try:
             conn.execute("DROP INDEX IF EXISTS ux_date_rule_rank_trainer")
         except Exception:
