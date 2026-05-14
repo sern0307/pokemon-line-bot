@@ -21,18 +21,21 @@ RULES = {0: "シングルバトル", 1: "ダブルバトル"}
 
 
 def _collect(season_int: int, season_label: str, rule: int,
-             date: str | None = None, replace_all: bool = False) -> None:
+             date: str | None = None,
+             is_final: bool = False,
+             replace_all: bool = False) -> None:
     """指定シーズンの全300件を取得してDBに保存する。"""
-    print(f"  [{season_label}] 全300件を取得中{'（最終スナップショット）' if date else ''}...")
+    kind = "最終結果" if is_final else "定時収集"
+    print(f"  [{season_label}] {kind} 全300件を取得中...")
     trainers, site_updated_at = scrape_all(season=season_int, rule=rule)
     print(f"  取得完了: {len(trainers)}件  サイト更新日時: {site_updated_at}")
     saved = save_rankings(
         trainers, rule=rule, season=season_label,
         site_updated_at=site_updated_at,
-        date=date, replace_all=replace_all,
+        date=date, is_final=is_final, replace_all=replace_all,
     )
     label = f"日付={date}" if date else "今日"
-    print(f"  DB保存完了: {saved}件 ({label})")
+    print(f"  DB保存完了: {saved}件 ({label}, is_final={is_final})")
 
 
 def collect_rule(rule: int, forced_season_int: int | None) -> None:
@@ -62,9 +65,9 @@ def collect_rule(rule: int, forced_season_int: int | None) -> None:
             prev_seasons = [(s, l) for s, l in all_site_seasons if l == db_season_label]
             if prev_seasons:
                 prev_int, prev_label = prev_seasons[0]
-                print(f"  [{prev_label}] 最終データを {db_latest_date} に上書き保存します")
+                print(f"  [{prev_label}] 最終結果を {db_latest_date} に保存します（is_final=True）")
                 _collect(prev_int, prev_label, rule,
-                         date=db_latest_date, replace_all=True)
+                         date=db_latest_date, is_final=True, replace_all=True)
                 time.sleep(2.0)  # サーバー負荷軽減
             else:
                 print(f"  ※ 前シーズン ({db_season_label}) はサイトから削除済みのためスキップ")

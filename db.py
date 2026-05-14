@@ -3,7 +3,7 @@ SQLite によるランキングデータの蓄積・参照
 """
 import sqlite3
 from contextlib import contextmanager
-from datetime import date, datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "data" / "rankings.db"
@@ -11,35 +11,51 @@ JST = timezone(timedelta(hours=9))
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    """DBとテーブルを初期化する（冪等）"""
+    """DBとテーブルを初期化する（冪等）。既存DBへのマイグレーションも実行。"""
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with _conn(db_path) as conn:
-        conn.executescript("""
+        # ── テーブル作成 ──
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS rankings (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                date        TEXT    NOT NULL,
-                season      TEXT,
-                rule        INTEGER NOT NULL DEFAULT 0,
-                rank        INTEGER NOT NULL,
-                trainer_name TEXT   NOT NULL,
-                rating      REAL,
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                date            TEXT    NOT NULL,
+                season          TEXT,
+                rule            INTEGER NOT NULL DEFAULT 0,
+                rank            INTEGER NOT NULL,
+                trainer_name    TEXT    NOT NULL,
+                rating          REAL,
+                is_final        INTEGER NOT NULL DEFAULT 0,
                 site_updated_at TEXT,
-                scraped_at  TEXT    NOT NULL
-            );
-
-            -- 同日・同ルール・同順位・同名の完全重複のみ防ぐ（タイ・同名別人を許容）
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_date_rule_rank_trainer
-                ON rankings(date, rule, rank, trainer_name);
-
-            -- トレーナー名での検索用インデックス
-            CREATE INDEX IF NOT EXISTS ix_trainer_name
-                ON rankings(trainer_name);
+                scraped_at      TEXT    NOT NULL
+            )
         """)
-        # 既存DBへのマイグレーション: season カラムがなければ追加
+
+        # ── インデックス作成（is_final を含む新版） ──
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_rankings_main
+                ON rankings(date, rule, rank, trainer_name, is_final)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS ix_trainer_name
+                ON rankings(trainer_name)
+        """)
+
+        # ── 既存DBへのカラム追加マイグレーション ──
+        for stmt in [
+            "ALTER TABLE rankings ADD COLUMN season TEXT",
+            "ALTER TABLE rankings ADD COLUMN is_final INTEGER NOT NULL DEFAULT 0",
+        ]:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass  # カラムが既に存在する場合は無視
+
+        # ── 旧 UNIQUE INDEX（is_final なし）を削除 ──
+        # 旧インデックスが残っていると同日に定時・最終の両レコードが共存できない
         try:
-            conn.execute("ALTER TABLE rankings ADD COLUMN season TEXT")
+            conn.execute("DROP INDEX IF EXISTS ux_date_rule_rank_trainer")
         except Exception:
-            pass  # 既にカラムが存在する場合は無視
+            pass
 
 
 @contextmanager
@@ -62,49 +78,46 @@ def save_rankings(
     season: str | None = None,
     site_updated_at: str | None = None,
     date: str | None = None,
+    is_final: bool = False,
     replace_all: bool = False,
     db_path: Path = DB_PATH,
 ) -> int:
     """
     スクレイピングしたランキングをDBに保存する。
-    同日・同ルール・同順位のレコードは上書き（UPSERT）。
+    同日・同ルール・同順位・同 is_final のレコードは上書き（UPSERT）。
 
     Args:
         date:        保存日付を上書きしたい場合に指定（デフォルトは今日のJST日付）。
-        replace_all: True にすると指定日付+ルールの既存レコードを全削除してから挿入する。
-                     シーズン最終スナップショットの上書きに使用。
+        is_final:    True = シーズン最終結果。False = 通常定時収集。
+        replace_all: True にすると指定日付+ルール+is_final の既存レコードを全削除してから挿入。
     戻り値: 保存件数
     """
     now = datetime.now(JST)
-    today = date or now.date().isoformat()  # JST基準の日付
+    today = date or now.date().isoformat()
+    is_final_int = 1 if is_final else 0
 
     rows = [
         (
-            today,
-            season,
-            rule,
-            t["rank"],
-            t["trainer_name"],
-            t.get("rating"),
-            site_updated_at,
-            now,
+            today, season, rule,
+            t["rank"], t["trainer_name"], t.get("rating"),
+            is_final_int, site_updated_at, now,
         )
         for t in trainers
     ]
 
     with _conn(db_path) as conn:
         if replace_all:
-            # 既存の当日・当ルール分を全削除してクリーンな状態で挿入
             conn.execute(
-                "DELETE FROM rankings WHERE date=? AND rule=?",
-                (today, rule),
+                "DELETE FROM rankings WHERE date=? AND rule=? AND is_final=?",
+                (today, rule, is_final_int),
             )
         conn.executemany(
             """
             INSERT INTO rankings
-                (date, season, rule, rank, trainer_name, rating, site_updated_at, scraped_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(date, rule, rank, trainer_name) DO UPDATE SET
+                (date, season, rule, rank, trainer_name, rating,
+                 is_final, site_updated_at, scraped_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(date, rule, rank, trainer_name, is_final) DO UPDATE SET
                 rating          = excluded.rating,
                 season          = excluded.season,
                 site_updated_at = excluded.site_updated_at,
@@ -121,16 +134,15 @@ def get_latest_season_in_db(
     db_path: Path = DB_PATH,
 ) -> tuple[str, str] | None:
     """
-    DBに記録されている最新シーズン名とその最終収集日を返す。
-    シーズン情報が未記録の場合は None。
-    戻り値: (season_label, latest_date)  例: ("シーズンM-1", "2026-05-13")
+    DBの定時収集（is_final=0）に記録されている最新シーズン名とその最終収集日を返す。
+    戻り値: (season_label, latest_date) または None
     """
     with _conn(db_path) as conn:
         row = conn.execute(
             """
             SELECT season, MAX(date) AS latest_date
             FROM rankings
-            WHERE rule=? AND season IS NOT NULL AND season != ''
+            WHERE rule=? AND is_final=0 AND season IS NOT NULL AND season != ''
             GROUP BY season
             ORDER BY latest_date DESC
             LIMIT 1
@@ -146,16 +158,14 @@ def get_trainer_history(
     limit: int = 30,
     db_path: Path = DB_PATH,
 ) -> list[dict]:
-    """
-    トレーナーの過去N日分の順位履歴を返す（新しい日付順）。
-    """
+    """トレーナーの過去N日分の順位履歴を返す（新しい日付順）。"""
     with _conn(db_path) as conn:
         rows = conn.execute(
             """
-            SELECT date, rank, rating, season
+            SELECT date, rank, rating, season, is_final
             FROM rankings
             WHERE trainer_name = ? AND rule = ?
-            ORDER BY date DESC
+            ORDER BY date DESC, is_final DESC
             LIMIT ?
             """,
             (trainer_name, rule, limit),
@@ -167,14 +177,14 @@ def get_today_ranking(
     rule: int = 0,
     db_path: Path = DB_PATH,
 ) -> list[dict]:
-    """今日のランキング全件を返す"""
+    """今日の定時収集ランキング全件を返す"""
     today = datetime.now(JST).date().isoformat()
     with _conn(db_path) as conn:
         rows = conn.execute(
             """
             SELECT rank, trainer_name, rating, season, site_updated_at
             FROM rankings
-            WHERE date = ? AND rule = ?
+            WHERE date = ? AND rule = ? AND is_final = 0
             ORDER BY rank ASC
             """,
             (today, rule),
@@ -192,10 +202,10 @@ def get_trainer_today(
     with _conn(db_path) as conn:
         row = conn.execute(
             """
-            SELECT rank, rating, season, site_updated_at
+            SELECT rank, rating, season, is_final, site_updated_at
             FROM rankings
             WHERE date = ? AND trainer_name = ? AND rule = ?
-            ORDER BY rank ASC
+            ORDER BY is_final DESC, rank ASC
             LIMIT 1
             """,
             (today, trainer_name, rule),
