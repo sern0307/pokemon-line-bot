@@ -500,7 +500,7 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
         value=True,
         key=f"{key_prefix}top_only_{trainer_name}_{rule}",
     )
-    history = load_history(all_variants, rule, top_only=top_only)
+    history = load_history(all_variants, rule, top_only=top_only).copy()
     if history.empty:
         st.warning("履歴データがありません。")
         return
@@ -508,6 +508,8 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
     # 後方互換: is_final 未対応DBからのキャッシュ等で列が欠落する場合
     if "最終結果" not in history.columns:
         history["最終結果"] = False
+    # bool 型に統一（NaN混入防止）
+    history["最終結果"] = history["最終結果"].fillna(False).astype(bool)
 
     history["ランク外"] = history["順位"].isna()
     history["順位_表示"] = history["順位"].apply(
@@ -596,7 +598,10 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
             margin = (r_max - r_min) * 0.1 or 10
             r_y0, r_y1 = r_min - margin, r_max + margin
             r_y_scale  = alt.Scale(domain=[r_y0, r_y1])
-            h_rated    = history.dropna(subset=["レーティング"])
+            h_rated    = history.dropna(subset=["レーティング"]).copy()
+            # pandas CoW / 旧キャッシュ対策: 列が欠落していても安全に動作させる
+            if "最終結果" not in h_rated.columns:
+                h_rated["最終結果"] = False
             r_x_sort   = list(h_rated["日付_表示"])
             line_r = (
                 alt.Chart(h_rated)
