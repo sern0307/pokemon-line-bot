@@ -4,10 +4,23 @@ on:
   schedule:
     # 毎日 JST 04:00 (= UTC 19:00 前日)
     - cron: "0 19 * * *"
-  workflow_dispatch:  # 手動実行ボタン
+  workflow_dispatch:
+    inputs:
+      final_season:
+        description: |
+          最終結果として保存するシーズン番号（例: 1）。
+          空欄のままなら通常の定時収集を実行します。
+        required: false
+        default: ""
+      final_date:
+        description: |
+          最終結果を保存する日付（例: 2026-05-13）。
+          空欄なら final_season の最終定時収集日を自動使用します。
+        required: false
+        default: ""
 
 permissions:
-  contents: write  # DB ファイルをコミット・プッシュするために必要
+  contents: write
 
 jobs:
   collect:
@@ -27,7 +40,11 @@ jobs:
       - name: 依存パッケージをインストール
         run: pip install -r requirements.txt
 
-      - name: シングル・ダブル全300件を収集して DB に保存
+      - name: ランキング収集
+        env:
+          SEASON:       ${{ github.event.inputs.final_season }}
+          FINAL_SEASON: ${{ github.event.inputs.final_season }}
+          FINAL_DATE:   ${{ github.event.inputs.final_date }}
         run: python collect.py
 
       - name: DB ファイルをコミット・プッシュ
