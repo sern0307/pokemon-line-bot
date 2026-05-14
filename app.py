@@ -1,7 +1,10 @@
+import re
 import sqlite3
+from datetime import date as _date_type, datetime as _dt_type
 from pathlib import Path
 
 import altair as alt
+import jpholiday
 import pandas as pd
 import streamlit as st
 
@@ -111,6 +114,104 @@ _SMALL_TO_LARGE = str.maketrans(
 def normalize_name(name: str) -> str:
     """小文字カナを大文字に統一し、表記ゆれを吸収する。"""
     return name.translate(_SMALL_TO_LARGE)
+
+
+# ══════════════════ 曜日 / 祝日ヘルパー ══════════════════════
+_WEEKDAY_JP   = ["月", "火", "水", "木", "金", "土", "日"]
+SAT_COLOR     = "#3b82f6"   # 土曜: 青
+SUN_HOL_COLOR = "#ef4444"   # 日曜・祝日: 赤
+BG_OPACITY    = 0.12
+
+
+def _parse_date(s: str) -> _date_type:
+    return _dt_type.strptime(s[:10], "%Y-%m-%d").date()
+
+
+def _day_suffix(date_str: str) -> str:
+    """'2026-05-14' → '（木）'"""
+    return f"（{_WEEKDAY_JP[_parse_date(date_str).weekday()]}）"
+
+
+def _date_kind(date_str: str) -> str | None:
+    """土曜='sat', 日曜・祝日='sun_hol', 平日=None"""
+    try:
+        d = _parse_date(date_str)
+    except Exception:
+        return None
+    if jpholiday.is_holiday(d):
+        return "sun_hol"
+    wd = d.weekday()
+    if wd == 5:
+        return "sat"
+    if wd == 6:
+        return "sun_hol"
+    return None
+
+
+def _fmt_date_label(date_str: str, is_final: bool = False) -> str:
+    """表示ラベル: '2026-05-14（木）' / '★ 2026-05-14（木）'（最終結果）"""
+    base = date_str + _day_suffix(date_str)
+    return f"★ {base}" if is_final else base
+
+
+def _raw_date_from_label(label: str) -> str:
+    """表示ラベルから YYYY-MM-DD を抽出する。"""
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", label)
+    return m.group(1) if m else ""
+
+
+def _build_bg_layers(
+    display_dates: list[str],
+    x_sort: list[str],
+    y0: float,
+    y1: float,
+    y_scale: alt.Scale,
+    reverse_y: bool = False,
+) -> list[alt.Chart]:
+    """
+    土曜（青）・日曜＆祝日（赤）の背景 mark_rect レイヤーリストを返す。
+    display_dates: x 軸に表示されている日付_表示ラベルの全リスト
+    """
+    sat_x, sun_hol_x = [], []
+    for lbl in display_dates:
+        raw = _raw_date_from_label(lbl)
+        kind = _date_kind(raw) if raw else None
+        if kind == "sat":
+            sat_x.append(lbl)
+        elif kind == "sun_hol":
+            sun_hol_x.append(lbl)
+
+    layers: list[alt.Chart] = []
+    for xs, color in [(sat_x, SAT_COLOR), (sun_hol_x, SUN_HOL_COLOR)]:
+        if not xs:
+            continue
+        bg_df = pd.DataFrame({"_x": xs, "_y0": float(y0), "_y1": float(y1)})
+        layer = (
+            alt.Chart(bg_df)
+            .mark_rect(opacity=BG_OPACITY, color=color)
+            .encode(
+                x=alt.X("_x:O", sort=x_sort),
+                y=alt.Y("_y0:Q", scale=y_scale),
+                y2=alt.Y2("_y1:Q"),
+            )
+        )
+        layers.append(layer)
+    return layers
+
+
+def _apply_row_style(df: pd.DataFrame, date_col: str = "日付"):
+    """曜日・祝日に応じた行背景色を持つ Styler を返す（ダークテーマ向け）。"""
+    def _row_bg(row):
+        raw = _raw_date_from_label(str(row[date_col]))
+        kind = _date_kind(raw) if raw else None
+        if kind == "sat":
+            bg = "background-color: rgba(59,130,246,0.20)"
+        elif kind == "sun_hol":
+            bg = "background-color: rgba(239,68,68,0.20)"
+        else:
+            bg = ""
+        return [bg] * len(row)
+    return df.style.apply(_row_bg, axis=1)
 
 
 # ═══════════════════════ Chart helper ═══════════════════════
@@ -310,25 +411,49 @@ def load_history(trainer_names: tuple[str, ...], rule: int, top_only: bool = Tru
 
 @st.cache_data(ttl=300)
 def load_avg_rating(rule: int) -> pd.DataFrame:
-    """定時収集データのみを使った平均レート推移（最終結果は除外）。"""
+    """
+    平均レート推移。定時収集・最終結果の両方を含む。
+    is_final=0: 定時収集、is_final=1: 最終結果。
+    チャートの x 軸は date ASC, is_final ASC（最終結果が同日の定時より右に来る）。
+    """
     conn = sqlite3.connect(DB_PATH)
     has_is_final = bool(conn.execute(
         "SELECT 1 FROM pragma_table_info('rankings') WHERE name='is_final'"
     ).fetchone())
-    where = "rule=? AND is_final=0" if has_is_final else "rule=?"
-    df = pd.read_sql_query(
-        f"""
-        SELECT date,
-               ROUND(AVG(rating), 3) AS avg,
-               ROUND(MAX(rating), 3) AS max,
-               ROUND(MIN(rating), 3) AS min
-        FROM rankings WHERE {where}
-        GROUP BY date ORDER BY date
-        """,
-        conn, params=(rule,),
-    )
+    if has_is_final:
+        df = pd.read_sql_query(
+            """
+            SELECT date, is_final,
+                   ROUND(AVG(rating), 3) AS avg,
+                   ROUND(MAX(rating), 3) AS max,
+                   ROUND(MIN(rating), 3) AS min
+            FROM rankings WHERE rule=?
+            GROUP BY date, is_final
+            ORDER BY date ASC, is_final ASC
+            """,
+            conn, params=(rule,),
+        )
+        df.columns = ["日付", "最終結果", "平均", "最高", "最低"]
+        df["最終結果"] = df["最終結果"].astype(bool)
+    else:
+        df = pd.read_sql_query(
+            """
+            SELECT date,
+                   ROUND(AVG(rating), 3) AS avg,
+                   ROUND(MAX(rating), 3) AS max,
+                   ROUND(MIN(rating), 3) AS min
+            FROM rankings WHERE rule=?
+            GROUP BY date ORDER BY date
+            """,
+            conn, params=(rule,),
+        )
+        df.columns = ["日付", "平均", "最高", "最低"]
+        df["最終結果"] = False
     conn.close()
-    df.columns = ["日付", "平均", "最高", "最低"]
+    # チャート・テーブル用ラベル（曜日付き、最終結果は ★ プレフィックス）
+    df["日付_表示"] = df.apply(
+        lambda r: _fmt_date_label(r["日付"], bool(r["最終結果"])), axis=1
+    )
     return df
 
 
@@ -389,9 +514,9 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
         lambda x: "ランク外" if pd.isna(x) else f"{int(x)}位"
     )
     history["順位_グラフ"] = history["順位"].fillna(RANK_OUT)
-    # 最終結果の日付ラベル（グラフ軸用）
+    # 曜日付き日付ラベル（グラフ軸用、最終結果は ★ プレフィックス）
     history["日付_表示"] = history.apply(
-        lambda r: f"★{r['日付']}" if r["最終結果"] else r["日付"], axis=1
+        lambda r: _fmt_date_label(r["日付"], bool(r["最終結果"])), axis=1
     )
 
     ranked = history.dropna(subset=["順位"])
@@ -411,16 +536,18 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
     with c1:
         st.markdown('<div class="sec">順位推移　　<span style="font-size:0.75em;color:#f59e0b;">★ = 最終結果</span></div>',
                     unsafe_allow_html=True)
+        rank_x_sort  = list(history["日付_表示"])
+        rank_y_scale = alt.Scale(reverse=True, domainMax=RANK_OUT + 5)
         base = alt.Chart(history).encode(
             x=alt.X("日付_表示:O", title=None,
-                    sort=list(history["日付_表示"]),
+                    sort=rank_x_sort,
                     axis=alt.Axis(labelAngle=-45)),
             tooltip=["日付_表示:O", "順位_表示:N", "レーティング:Q"],
         )
         line = base.mark_line(strokeWidth=2).encode(
             y=alt.Y(
                 "順位_グラフ:Q", title="順位",
-                scale=alt.Scale(reverse=True, domainMax=RANK_OUT + 5),
+                scale=rank_y_scale,
                 axis=alt.Axis(
                     tickMinStep=1,
                     values=list(range(0, 301, 50)) + [RANK_OUT],
@@ -434,24 +561,30 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
                 alt.datum["ランク外"], alt.value("#555577"), alt.value("#7C6FFF")
             ),
         )
-        # 通常点：丸
         pts_normal = base.transform_filter(
             ~alt.datum["最終結果"]
         ).mark_point(size=55, filled=True).encode(
-            y=alt.Y("順位_グラフ:Q", scale=alt.Scale(reverse=True)),
+            y=alt.Y("順位_グラフ:Q", scale=rank_y_scale),
             color=alt.condition(
                 alt.datum["ランク外"], alt.value("#444466"), alt.value("#7C6FFF")
             ),
         )
-        # 最終結果点：★（square で代替）
         pts_final = base.transform_filter(
             alt.datum["最終結果"]
         ).mark_point(size=120, filled=True, shape="diamond").encode(
-            y=alt.Y("順位_グラフ:Q", scale=alt.Scale(reverse=True)),
+            y=alt.Y("順位_グラフ:Q", scale=rank_y_scale),
             color=alt.value("#f59e0b"),
         )
+        # 曜日・祝日背景レイヤー
+        rank_bg = _build_bg_layers(
+            rank_x_sort, rank_x_sort,
+            y0=0, y1=RANK_OUT + 5, y_scale=rank_y_scale,
+        )
+        rank_chart = line + pts_normal + pts_final
+        for bg in rank_bg:
+            rank_chart = bg + rank_chart
         st.altair_chart(
-            _styled(line + pts_normal + pts_final, height=250),
+            _styled(rank_chart, height=250),
             use_container_width=True,
         )
 
@@ -461,16 +594,18 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
         if not r_vals.empty:
             r_min, r_max = r_vals.min(), r_vals.max()
             margin = (r_max - r_min) * 0.1 or 10
-            h_rated = history.dropna(subset=["レーティング"])
+            r_y0, r_y1 = r_min - margin, r_max + margin
+            r_y_scale  = alt.Scale(domain=[r_y0, r_y1])
+            h_rated    = history.dropna(subset=["レーティング"])
+            r_x_sort   = list(h_rated["日付_表示"])
             line_r = (
                 alt.Chart(h_rated)
                 .mark_line(strokeWidth=2, color="#7C6FFF")
                 .encode(
                     x=alt.X("日付_表示:O", title=None,
-                            sort=list(h_rated["日付_表示"]),
+                            sort=r_x_sort,
                             axis=alt.Axis(labelAngle=-45)),
-                    y=alt.Y("レーティング:Q",
-                            scale=alt.Scale(domain=[r_min - margin, r_max + margin])),
+                    y=alt.Y("レーティング:Q", scale=r_y_scale),
                     tooltip=["日付_表示:O", "順位_表示:N", "レーティング:Q"],
                 )
             )
@@ -478,20 +613,28 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
                 alt.Chart(h_rated[~h_rated["最終結果"]])
                 .mark_point(size=50, filled=True, color="#7C6FFF")
                 .encode(
-                    x=alt.X("日付_表示:O", sort=list(h_rated["日付_表示"])),
-                    y="レーティング:Q",
+                    x=alt.X("日付_表示:O", sort=r_x_sort),
+                    y=alt.Y("レーティング:Q", scale=r_y_scale),
                 )
             )
             pts_r_final = (
                 alt.Chart(h_rated[h_rated["最終結果"]])
                 .mark_point(size=120, filled=True, shape="diamond", color="#f59e0b")
                 .encode(
-                    x=alt.X("日付_表示:O", sort=list(h_rated["日付_表示"])),
-                    y="レーティング:Q",
+                    x=alt.X("日付_表示:O", sort=r_x_sort),
+                    y=alt.Y("レーティング:Q", scale=r_y_scale),
                 )
             )
+            # 曜日・祝日背景レイヤー
+            r_bg = _build_bg_layers(
+                r_x_sort, r_x_sort,
+                y0=r_y0, y1=r_y1, y_scale=r_y_scale,
+            )
+            rating_chart = line_r + pts_r_normal + pts_r_final
+            for bg in r_bg:
+                rating_chart = bg + rating_chart
             st.altair_chart(
-                _styled(line_r + pts_r_normal + pts_r_final, height=250),
+                _styled(rating_chart, height=250),
                 use_container_width=True,
             )
         else:
@@ -499,14 +642,17 @@ def show_trainer_detail(trainer_name: str, rule: int, key_prefix: str = "") -> N
 
     # ── Table ──
     st.markdown('<div class="sec">履歴テーブル</div>', unsafe_allow_html=True)
-    table_df = history[["日付", "順位_表示", "レーティング", "最終結果"]].copy()
-    table_df["日付"] = table_df.apply(
-        lambda r: f"★ {r['日付']}" if r["最終結果"] else r["日付"], axis=1
+    tbl = history[["日付", "順位_表示", "レーティング", "最終結果"]].copy()
+    tbl["日付"] = tbl.apply(
+        lambda r: _fmt_date_label(r["日付"], bool(r["最終結果"])), axis=1
     )
-    table_df = table_df.drop(columns=["最終結果"])
-    table_df.columns = ["日付", "順位", "レーティング"]
+    tbl = tbl.drop(columns=["最終結果"])
+    tbl.columns = ["日付", "順位", "レーティング"]
+    tbl = tbl.sort_values("日付", ascending=False)
+    styled_tbl = _apply_row_style(tbl, date_col="日付")
+    styled_tbl = styled_tbl.format({"レーティング": lambda v: f"{v:.3f}" if pd.notna(v) else "―"})
     st.dataframe(
-        table_df.sort_values("日付", ascending=False),
+        styled_tbl,
         use_container_width=True,
         hide_index=True,
         column_config={
@@ -551,7 +697,8 @@ if not date_options:
 
 def _fmt_date(opt: tuple[str, int]) -> str:
     date, is_final = opt
-    return f"★ {date}（最終結果）" if is_final else date
+    base = date + _day_suffix(date)
+    return f"★ {base}（最終結果）" if is_final else base
 
 selected_opt = st.sidebar.selectbox("集計日付", date_options, format_func=_fmt_date)
 selected_date, selected_is_final = selected_opt
@@ -577,7 +724,7 @@ st.markdown(f"""
   <div>
     <div class="hero-title">ポケモンチャンピオンズ ランキング</div>
     <div class="hero-sub">
-      {RULE_ICON[rule]}&nbsp;{RULE_LABEL[rule]}　／　🗓&nbsp;{season_hero}　／　集計日：{selected_date}{final_badge}
+      {RULE_ICON[rule]}&nbsp;{RULE_LABEL[rule]}　／　🗓&nbsp;{season_hero}　／　集計日：{selected_date}{_day_suffix(selected_date)}{final_badge}
     </div>
   </div>
 </div>
@@ -690,18 +837,33 @@ with tab3:
     if avg_df.empty:
         st.warning("データがありません。")
     else:
-        latest = avg_df.iloc[-1]
-        prev   = avg_df.iloc[-2] if len(avg_df) >= 2 else None
-        diff   = round(latest["平均"] - prev["平均"], 3) if prev is not None else None
+        # メトリクス用: 定時収集の最新行を参照
+        regular_df = avg_df[~avg_df["最終結果"]]
+        final_df   = avg_df[avg_df["最終結果"]]
+        latest_reg = regular_df.iloc[-1] if not regular_df.empty else avg_df.iloc[-1]
+        prev_reg   = regular_df.iloc[-2] if len(regular_df) >= 2 else None
+        diff = round(latest_reg["平均"] - prev_reg["平均"], 3) if prev_reg is not None else None
+
+        # 最終結果の最新行（あれば）
+        latest_final = final_df.iloc[-1] if not final_df.empty else None
+
+        diff_str  = f"{diff:+.3f}" if diff is not None else "―"
+        diff_color = "#4ade80" if (diff or 0) >= 0 else "#f87171"
 
         # Stats row
-        diff_str = f"{diff:+.3f}" if diff is not None else "―"
-        diff_color = "#4ade80" if (diff or 0) >= 0 else "#f87171"
+        final_card = ""
+        if latest_final is not None:
+            final_card = f"""
+          <div class="sc" style="border-color:#f59e0b55;">
+            <div class="sc-label" style="color:#f59e0b;">★ 最終結果 平均レーティング</div>
+            <div class="sc-value">{latest_final['平均']:,.3f}</div>
+          </div>"""
+
         st.markdown(f"""
         <div class="scards">
           <div class="sc">
-            <div class="sc-label">最新 平均レーティング</div>
-            <div class="sc-value">{latest['平均']:,.3f}
+            <div class="sc-label">最新 平均レーティング（定時）</div>
+            <div class="sc-value">{latest_reg['平均']:,.3f}
               <span style="font-size:0.8rem; color:{diff_color}; font-weight:600;">
                 &nbsp;{diff_str}
               </span>
@@ -709,53 +871,105 @@ with tab3:
           </div>
           <div class="sc">
             <div class="sc-label">最新 最高レーティング</div>
-            <div class="sc-value">{latest['最高']:,.3f}</div>
+            <div class="sc-value">{latest_reg['最高']:,.3f}</div>
           </div>
           <div class="sc">
             <div class="sc-label">最新 最低レーティング</div>
-            <div class="sc-value">{latest['最低']:,.3f}</div>
+            <div class="sc-value">{latest_reg['最低']:,.3f}</div>
           </div>
+          {final_card}
         </div>
         """, unsafe_allow_html=True)
 
-        st.markdown('<div class="sec">レーティング推移チャート</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec">レーティング推移チャート　　<span style="font-size:0.75em;color:#f59e0b;">★ = 最終結果</span></div>',
+                    unsafe_allow_html=True)
+
+        # x 軸ラベル順（定時 → 同日最終の順）
+        x_order = list(avg_df["日付_表示"])
 
         COLOR_MAP = {"平均": "#7C6FFF", "最高": "#f59e0b", "最低": "#60a5fa"}
-        melted = avg_df.melt(id_vars="日付", var_name="指標", value_name="レーティング")
-        r_min  = avg_df["最低"].min()
-        r_max  = avg_df["最高"].max()
-        margin = (r_max - r_min) * 0.06 or 10
+        r_min   = avg_df["最低"].min()
+        r_max   = avg_df["最高"].max()
+        margin  = (r_max - r_min) * 0.06 or 10
+        t3_y0   = r_min - margin
+        t3_y1   = r_max + margin
+        y_scale = alt.Scale(domain=[t3_y0, t3_y1])
 
-        avg_chart = (
-            alt.Chart(melted)
+        # 定時データ: 折れ線 + 丸点
+        melted_reg = regular_df.melt(
+            id_vars="日付_表示", value_vars=["平均", "最高", "最低"],
+            var_name="指標", value_name="レーティング",
+        )
+        line_chart = (
+            alt.Chart(melted_reg)
             .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45))
             .encode(
-                x=alt.X("日付:O", title=None, axis=alt.Axis(labelAngle=-45)),
-                y=alt.Y(
-                    "レーティング:Q",
-                    scale=alt.Scale(domain=[r_min - margin, r_max + margin]),
-                ),
+                x=alt.X("日付_表示:O", title=None, sort=x_order,
+                        axis=alt.Axis(labelAngle=-45)),
+                y=alt.Y("レーティング:Q", scale=y_scale),
                 color=alt.Color(
                     "指標:N",
-                    scale=alt.Scale(
-                        domain=list(COLOR_MAP.keys()),
-                        range=list(COLOR_MAP.values()),
-                    ),
+                    scale=alt.Scale(domain=list(COLOR_MAP.keys()),
+                                    range=list(COLOR_MAP.values())),
                     legend=alt.Legend(title="指標", orient="top-left"),
                 ),
                 strokeDash=alt.condition(
                     alt.datum["指標"] == "平均",
-                    alt.value([0]),
-                    alt.value([5, 4]),
+                    alt.value([0]), alt.value([5, 4]),
                 ),
-                tooltip=["日付:O", "指標:N", "レーティング:Q"],
+                tooltip=["日付_表示:O", "指標:N", "レーティング:Q"],
             )
         )
-        st.altair_chart(_styled(avg_chart, height=380), use_container_width=True)
 
+        # 最終結果データ: ◆ マーカーのみ
+        final_charts = []
+        if not final_df.empty:
+            melted_fin = final_df.melt(
+                id_vars="日付_表示", value_vars=["平均", "最高", "最低"],
+                var_name="指標", value_name="レーティング",
+            )
+            final_points = (
+                alt.Chart(melted_fin)
+                .mark_point(shape="diamond", size=130, filled=True, opacity=0.9)
+                .encode(
+                    x=alt.X("日付_表示:O", sort=x_order),
+                    y=alt.Y("レーティング:Q", scale=y_scale),
+                    color=alt.Color(
+                        "指標:N",
+                        scale=alt.Scale(domain=list(COLOR_MAP.keys()),
+                                        range=list(COLOR_MAP.values())),
+                    ),
+                    tooltip=["日付_表示:O", "指標:N", "レーティング:Q"],
+                )
+            )
+            final_charts.append(final_points)
+
+        # 曜日・祝日背景レイヤー（x_order 全体を対象）
+        t3_bg = _build_bg_layers(
+            x_order, x_order,
+            y0=t3_y0, y1=t3_y1, y_scale=y_scale,
+        )
+        combined = line_chart
+        for fc in final_charts:
+            combined = combined + fc
+        for bg in t3_bg:
+            combined = bg + combined
+
+        st.altair_chart(_styled(combined, height=380), use_container_width=True)
+
+        # 集計テーブル（最終結果を最上部に、曜日付き、週末・祝日に色付け）
         st.markdown('<div class="sec">集計テーブル</div>', unsafe_allow_html=True)
+        t3_tbl = avg_df.sort_values(["日付", "最終結果"], ascending=[False, False]).copy()
+        t3_tbl["日付"] = t3_tbl["日付_表示"].apply(
+            lambda v: f"{v}（最終結果）" if v.startswith("★") else v
+        )
+        t3_tbl = t3_tbl[["日付", "平均", "最高", "最低"]]
+        styled_t3 = _apply_row_style(t3_tbl, date_col="日付")
+        styled_t3 = styled_t3.format({
+            "平均": "{:.3f}", "最高": "{:.3f}", "最低": "{:.3f}",
+        })
         st.dataframe(
-            avg_df.sort_values("日付", ascending=False),
+            styled_t3,
             use_container_width=True,
             hide_index=True,
             column_config={
