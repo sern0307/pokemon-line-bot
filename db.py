@@ -61,15 +61,22 @@ def save_rankings(
     rule: int = 0,
     season: str | None = None,
     site_updated_at: str | None = None,
+    date: str | None = None,
+    replace_all: bool = False,
     db_path: Path = DB_PATH,
 ) -> int:
     """
     スクレイピングしたランキングをDBに保存する。
     同日・同ルール・同順位のレコードは上書き（UPSERT）。
+
+    Args:
+        date:        保存日付を上書きしたい場合に指定（デフォルトは今日のJST日付）。
+        replace_all: True にすると指定日付+ルールの既存レコードを全削除してから挿入する。
+                     シーズン最終スナップショットの上書きに使用。
     戻り値: 保存件数
     """
     now = datetime.now(JST)
-    today = now.date().isoformat()  # JST基準の日付
+    today = date or now.date().isoformat()  # JST基準の日付
 
     rows = [
         (
@@ -86,6 +93,12 @@ def save_rankings(
     ]
 
     with _conn(db_path) as conn:
+        if replace_all:
+            # 既存の当日・当ルール分を全削除してクリーンな状態で挿入
+            conn.execute(
+                "DELETE FROM rankings WHERE date=? AND rule=?",
+                (today, rule),
+            )
         conn.executemany(
             """
             INSERT INTO rankings
@@ -101,6 +114,30 @@ def save_rankings(
         )
 
     return len(rows)
+
+
+def get_latest_season_in_db(
+    rule: int,
+    db_path: Path = DB_PATH,
+) -> tuple[str, str] | None:
+    """
+    DBに記録されている最新シーズン名とその最終収集日を返す。
+    シーズン情報が未記録の場合は None。
+    戻り値: (season_label, latest_date)  例: ("シーズンM-1", "2026-05-13")
+    """
+    with _conn(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT season, MAX(date) AS latest_date
+            FROM rankings
+            WHERE rule=? AND season IS NOT NULL AND season != ''
+            GROUP BY season
+            ORDER BY latest_date DESC
+            LIMIT 1
+            """,
+            (rule,),
+        ).fetchone()
+    return (row["season"], row["latest_date"]) if row else None
 
 
 def get_trainer_history(

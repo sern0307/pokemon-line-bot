@@ -18,11 +18,8 @@ HEADERS = {
 }
 
 
-def get_latest_season(rule: int = 0) -> tuple[int, str]:
-    """
-    サイトのシーズン選択UIから最新シーズン番号を取得する。
-    戻り値: (シーズン番号, シーズン名)  例: (2, "シーズンM-2")
-    """
+def _parse_season_select(rule: int) -> list[tuple[int, str]]:
+    """サイトのシーズン選択UIから全シーズンを (season_int, label) のリストで返す。"""
     try:
         resp = requests.get(BASE_URL, params={"rule": rule}, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -35,17 +32,34 @@ def get_latest_season(rule: int = 0) -> tuple[int, str]:
     if select is None:
         raise RuntimeError("シーズン選択UIが見つかりませんでした")
 
-    latest_value = None
-    latest_label = None
+    seasons: list[tuple[int, str]] = []
     for option in select.find_all("option"):
         val = option.get("value")
         if val and val.isdigit():
-            if latest_value is None or int(val) > latest_value:
-                latest_value = int(val)
-                latest_label = " ".join(option.get_text(strip=True).split())
+            label = " ".join(option.get_text(strip=True).split())
+            seasons.append((int(val), label))
 
-    if latest_value is None:
+    if not seasons:
         raise RuntimeError("シーズン番号が取得できませんでした")
+
+    return sorted(seasons, key=lambda x: x[0])  # 古い順
+
+
+def get_all_seasons(rule: int = 0) -> list[tuple[int, str]]:
+    """
+    サイトに存在する全シーズンを古い順で返す。
+    戻り値: [(season_int, season_label), ...]  例: [(1, "シーズンM-1"), (2, "シーズンM-2")]
+    """
+    return _parse_season_select(rule)
+
+
+def get_latest_season(rule: int = 0) -> tuple[int, str]:
+    """
+    サイトのシーズン選択UIから最新シーズン番号を取得する。
+    戻り値: (シーズン番号, シーズン名)  例: (2, "シーズンM-2")
+    """
+    seasons = _parse_season_select(rule)
+    return seasons[-1]  # 最大値 = 最新
 
     return latest_value, latest_label
 
