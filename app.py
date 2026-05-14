@@ -131,13 +131,50 @@ def _styled(chart, height: int | None = None):
 
 # ═══════════════════════ Data functions ═══════════════════════
 @st.cache_data(ttl=300)
-def load_dates() -> list[str]:
+def load_all_dates() -> list[str]:
+    """全ルール・全シーズンの集計日一覧（新しい順）。サイドバー統計用。"""
     conn = sqlite3.connect(DB_PATH)
     dates = [r[0] for r in conn.execute(
         "SELECT DISTINCT date FROM rankings ORDER BY date DESC"
     ).fetchall()]
     conn.close()
     return dates
+
+
+@st.cache_data(ttl=300)
+def load_seasons(rule: int) -> list[str]:
+    """DBに存在するシーズン一覧を新しい順で返す。"""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        """
+        SELECT season, MAX(date) AS latest
+        FROM rankings
+        WHERE rule=? AND season IS NOT NULL
+        GROUP BY season
+        ORDER BY latest DESC
+        """,
+        (rule,),
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+@st.cache_data(ttl=300)
+def load_dates_for_season(season: str | None, rule: int) -> list[str]:
+    """シーズン（None=全シーズン）でフィルタした日付一覧（新しい順）。"""
+    conn = sqlite3.connect(DB_PATH)
+    if season is None:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM rankings WHERE rule=? ORDER BY date DESC",
+            (rule,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT DISTINCT date FROM rankings WHERE rule=? AND season=? ORDER BY date DESC",
+            (rule, season),
+        ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
 
 @st.cache_data(ttl=300)
@@ -377,9 +414,27 @@ rule = st.sidebar.radio(
     format_func=lambda x: f"{RULE_ICON[x]}  {RULE_LABEL[x]}",
 )
 
-dates = load_dates()
-if not dates:
+# ── シーズン選択 ──
+seasons = load_seasons(rule)
+ALL_SEASONS_LABEL = "📅 全シーズン"
+if seasons:
+    season_options = seasons + [ALL_SEASONS_LABEL]
+    sel_season_ui = st.sidebar.selectbox("シーズン", season_options, index=0)
+    selected_season = None if sel_season_ui == ALL_SEASONS_LABEL else sel_season_ui
+else:
+    selected_season = None
+    sel_season_ui = ALL_SEASONS_LABEL
+
+# ── 日付選択（シーズンでフィルタ済み） ──
+dates = load_dates_for_season(selected_season, rule)
+all_dates = load_all_dates()  # サイドバー統計用（全体）
+
+if not all_dates:
     st.error("データがありません。GitHub Actions を実行してください。")
+    st.stop()
+
+if not dates:
+    st.warning("このシーズンのデータはまだありません。")
     st.stop()
 
 selected_date = st.sidebar.selectbox("集計日付", dates)
@@ -387,16 +442,15 @@ selected_date = st.sidebar.selectbox("集計日付", dates)
 st.sidebar.markdown("---")
 st.sidebar.markdown(f"""
 <div style="font-size:0.75rem; color:#6a72a0; line-height:1.9;">
-  最終収集：<span style="color:#9a93d8">{dates[0]}</span><br>
-  蓄積日数：<span style="color:#9a93d8">{len(dates)} 日分</span>
+  最終収集：<span style="color:#9a93d8">{all_dates[0]}</span><br>
+  蓄積日数：<span style="color:#9a93d8">{len(all_dates)} 日分（全体）</span>
 </div>
 """, unsafe_allow_html=True)
 
 if "selected_trainer" not in st.session_state:
     st.session_state.selected_trainer = ""
 
-season_label = load_season_for_date(selected_date, rule)
-season_str = f"　／　{season_label}" if season_label else ""
+season_hero = selected_season or load_season_for_date(selected_date, rule) or "全シーズン"
 
 # ═══════════════════════ Hero Header ═══════════════════════════
 st.markdown(f"""
@@ -405,7 +459,7 @@ st.markdown(f"""
   <div>
     <div class="hero-title">ポケモンチャンピオンズ ランキング</div>
     <div class="hero-sub">
-      {RULE_ICON[rule]}&nbsp;{RULE_LABEL[rule]}　／　集計日：{selected_date}{season_str}　／　蓄積 {len(dates)} 日分
+      {RULE_ICON[rule]}&nbsp;{RULE_LABEL[rule]}　／　🗓&nbsp;{season_hero}　／　集計日：{selected_date}
     </div>
   </div>
 </div>
