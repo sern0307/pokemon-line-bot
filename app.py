@@ -895,24 +895,32 @@ with tab3:
         t3_y1   = r_max + margin
         y_scale = alt.Scale(domain=[t3_y0, t3_y1])
 
-        # 定時データ: 折れ線 + 丸点
+        # 全データ（定時＋最終）を melt — 折れ線はすべてのデータを通す
+        melted_all = avg_df.melt(
+            id_vars="日付_表示", value_vars=["平均", "最高", "最低"],
+            var_name="指標", value_name="レーティング",
+        )
         melted_reg = regular_df.melt(
             id_vars="日付_表示", value_vars=["平均", "最高", "最低"],
             var_name="指標", value_name="レーティング",
         )
+
+        color_enc = alt.Color(
+            "指標:N",
+            scale=alt.Scale(domain=list(COLOR_MAP.keys()),
+                            range=list(COLOR_MAP.values())),
+            legend=alt.Legend(title="指標", orient="top-left"),
+        )
+
+        # 折れ線: 定時→最終→次の定時 をすべて繋ぐ（点なし）
         line_chart = (
-            alt.Chart(melted_reg)
-            .mark_line(strokeWidth=2, point=alt.OverlayMarkDef(filled=True, size=45))
+            alt.Chart(melted_all)
+            .mark_line(strokeWidth=2)
             .encode(
                 x=alt.X("日付_表示:O", title=None, sort=x_order,
                         axis=alt.Axis(labelAngle=-45)),
                 y=alt.Y("レーティング:Q", scale=y_scale),
-                color=alt.Color(
-                    "指標:N",
-                    scale=alt.Scale(domain=list(COLOR_MAP.keys()),
-                                    range=list(COLOR_MAP.values())),
-                    legend=alt.Legend(title="指標", orient="top-left"),
-                ),
+                color=color_enc,
                 strokeDash=alt.condition(
                     alt.datum["指標"] == "平均",
                     alt.value([0]), alt.value([5, 4]),
@@ -920,8 +928,18 @@ with tab3:
                 tooltip=["日付_表示:O", "指標:N", "レーティング:Q"],
             )
         )
+        # 定時点: 丸
+        reg_points = (
+            alt.Chart(melted_reg)
+            .mark_point(filled=True, size=45)
+            .encode(
+                x=alt.X("日付_表示:O", sort=x_order),
+                y=alt.Y("レーティング:Q", scale=y_scale),
+                color=color_enc,
+            )
+        )
 
-        # 最終結果データ: ◆ マーカーのみ
+        # 最終結果点: ◆ マーカー（線は上の line_chart が通過済み）
         final_charts = []
         if not final_df.empty:
             melted_fin = final_df.melt(
@@ -934,11 +952,7 @@ with tab3:
                 .encode(
                     x=alt.X("日付_表示:O", sort=x_order),
                     y=alt.Y("レーティング:Q", scale=y_scale),
-                    color=alt.Color(
-                        "指標:N",
-                        scale=alt.Scale(domain=list(COLOR_MAP.keys()),
-                                        range=list(COLOR_MAP.values())),
-                    ),
+                    color=color_enc,
                     tooltip=["日付_表示:O", "指標:N", "レーティング:Q"],
                 )
             )
@@ -949,7 +963,7 @@ with tab3:
             x_order, x_order,
             y0=t3_y0, y1=t3_y1, y_scale=y_scale,
         )
-        combined = line_chart
+        combined = line_chart + reg_points
         for fc in final_charts:
             combined = combined + fc
         for bg in t3_bg:
